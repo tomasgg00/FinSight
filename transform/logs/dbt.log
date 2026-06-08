@@ -1,0 +1,30 @@
+[0m12:07:53.134850 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'start', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x0000016448BF63C0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x00000164458EF250>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001644AF9BED0>]}
+
+
+============================== 12:07:53.143005 | 020b9e21-8328-435e-8c14-fd865456460e ==============================
+[0m12:07:53.143005 [info ] [MainThread]: Running with dbt=1.11.11
+[0m12:07:53.143921 [debug] [MainThread]: running dbt with arguments {'version_check': 'True', 'no_print': 'None', 'static_parser': 'True', 'target_path': 'None', 'warn_error_options': 'WarnErrorOptionsV2(error=[], warn=[], silence=[])', 'printer_width': '80', 'write_json': 'True', 'empty': 'None', 'log_cache_events': 'False', 'introspect': 'True', 'cache_selected_only': 'False', 'log_format': 'default', 'debug': 'False', 'fail_fast': 'False', 'partial_parse': 'True', 'send_anonymous_usage_stats': 'True', 'quiet': 'False', 'warn_error': 'None', 'profiles_dir': 'C:\\Users\\DQ218NT\\.dbt', 'invocation_command': 'dbt init finsight_dbt', 'use_colors': 'True', 'indirect_selection': 'eager', 'use_experimental_parser': 'False', 'log_path': 'logs'}
+[0m12:07:53.190881 [info ] [MainThread]: Creating dbt configuration folder at C:\Users\DQ218NT\.dbt
+[0m12:07:53.195877 [debug] [MainThread]: Starter project path: C:\Users\DQ218NT\OneDrive - EY\coding_tomas\FinSight\venv\Lib\site-packages\dbt\include\starter_project
+[0m12:07:53.269770 [info ] [MainThread]: 
+Your new dbt project "finsight_dbt" was created!
+
+For more information on how to configure the profiles.yml file,
+please consult the dbt documentation here:
+
+  https://docs.getdbt.com/docs/configure-your-profile
+
+One more thing:
+
+Need help? Don't hesitate to reach out to us via GitHub issues or on Slack:
+
+  https://community.getdbt.com/
+
+Happy modeling!
+
+[0m12:07:53.270547 [info ] [MainThread]: Setting up your profile.
+[0m12:08:05.933194 [info ] [MainThread]: Profile finsight_dbt written to C:\Users\DQ218NT\.dbt\profiles.yml using target's sample configuration. Once updated, you'll be able to start developing with dbt.
+[0m12:08:05.935419 [debug] [MainThread]: Command `dbt init` succeeded at 12:08:05.935154 after 12.99 seconds
+[0m12:08:05.936215 [debug] [MainThread]: Sending event: {'category': 'dbt', 'action': 'invocation', 'label': 'end', 'context': [<snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001644AFB3230>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001644B0C39B0>, <snowplow_tracker.self_describing_json.SelfDescribingJson object at 0x000001644B1A05A0>]}
+[0m12:08:05.936841 [debug] [MainThread]: Flushing usage events
+[0m12:08:07.212061 [debug] [MainThread]: An error was encountered while trying to flush usage events
