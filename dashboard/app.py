@@ -115,6 +115,11 @@ Rules:
 - Use mart_latest_snapshot for current/latest questions
 - Use mart_stock_summary for historical questions
 - Return ONLY the raw SQL — no markdown, no backticks, no explanation
+- For 'this year' ALWAYS use: price_date >= '2026-01-01'
+- For 'last 6 months' use: price_date >= current_date - interval '6 months'
+- For 'last month' use: price_date >= current_date - interval '1 month'
+- Today's date is 2026-06-08
+- For price trends always SELECT price_date, ticker, close_price
 """
 
 @st.cache_data(ttl=3600)
@@ -163,6 +168,71 @@ def call_ollama(question):
     )
     sql = response["message"]["content"].strip()
     return sql.replace("```sql", "").replace("```", "").strip()
+
+def summarise_results(question, sql, df):
+    if df.empty:
+        return "No data found for that question."
+
+    data_str = df.to_string(index=False)
+    prompt = f"""You are a financial analyst assistant. 
+A user asked: "{question}"
+
+The following SQL was run: {sql}
+
+The results are:
+{data_str}
+
+Write a concise 2-3 sentence plain English summary of these results. 
+Be specific — mention actual ticker names, numbers and what they mean.
+Do not mention SQL. Be direct and insightful."""
+
+    response = ollama.chat(
+        model="mistral",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response["message"]["content"].strip()
+
+def should_render_chart(question, df):
+    if df.empty or len(df) < 2:
+        return False
+    has_date = any(col in df.columns for col in ["price_date", "date", "latest_date"])
+    has_numeric = df.select_dtypes(include="number").shape[1] > 0
+    visual_words = ["show", "chart", "plot", "compare", "trend", "over time",
+                    "history", "performance", "vs", "versus"]
+    is_visual_question = any(w in question.lower() for w in visual_words)
+    return (has_date or is_visual_question) and has_numeric
+
+def render_chart(question, df):
+    date_col = next((c for c in ["price_date", "date", "latest_date"]
+                     if c in df.columns), None)
+    numeric_cols = df.select_dtypes(include="number").columns.tolist()
+
+    if date_col and numeric_cols:
+        fig = px.line(
+            df, x=date_col, y=numeric_cols,
+            template="plotly_dark",
+            color_discrete_sequence=["#1D9E75", "#EF9F27", "#7F77DD",
+                                     "#E24B4A", "#534AB7"]
+        )
+        fig.update_layout(
+            paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
+            height=350, margin=dict(l=0, r=0, t=30, b=0),
+            font=dict(color="#888")
+        )
+        return fig
+    elif numeric_cols and "ticker" in df.columns:
+        fig = px.bar(
+            df, x="ticker", y=numeric_cols[0],
+            template="plotly_dark",
+            color_discrete_sequence=["#1D9E75"]
+        )
+        fig.update_layout(
+            paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
+            height=350, margin=dict(l=0, r=0, t=30, b=0),
+            font=dict(color="#888")
+        )
+        return fig
+    return None
 
 def candlestick_chart(history, ticker):
     fig = make_subplots(
@@ -477,10 +547,10 @@ elif page == "AI agent":
 
     suggestions = [
         "Which tickers are bullish?",
-        "Best performing stock last month?",
-        "Which ticker has highest RSI?",
-        "Most volatile ticker this year?",
-        "Lowest daily return today?",
+        "Show me AAPL price trend this year",
+        "Which ticker has the highest RSI?",
+        "Compare daily returns of JPM and BAC",
+        "Most volatile ticker in the last 6 months?",
     ]
 
     st.markdown('<p class="section-header">Suggested questions</p>',
@@ -498,11 +568,18 @@ elif page == "AI agent":
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            if msg["role"] == "assistant" and "df" in msg:
+            if msg["role"] == "assistant":
+                if msg.get("summary"):
+                    st.markdown(msg["summary"])
                 if msg.get("sql"):
-                    st.caption(f"SQL: `{msg['sql']}`")
-                st.dataframe(msg["df"], use_container_width=True,
-                             hide_index=True)
+                    with st.expander("View SQL"):
+                        st.code(msg["sql"], language="sql")
+                if msg.get("chart") is not None:
+                    st.plotly_chart(msg["chart"], use_container_width=True)
+                if msg.get("df") is not None:
+                    with st.expander("View raw data"):
+                        st.dataframe(msg["df"], use_container_width=True,
+                                     hide_index=True)
             else:
                 st.markdown(msg["content"])
 
@@ -523,15 +600,31 @@ elif page == "AI agent":
                     con = duckdb.connect(DB_PATH, read_only=True)
                     result = con.execute(sql).df()
                     con.close()
-                    st.caption(f"SQL: `{sql}`")
-                    st.dataframe(result, use_container_width=True,
-                                 hide_index=True)
+
+                    summary = summarise_results(question, sql, result)
+                    st.markdown(summary)
+
+                    with st.expander("View SQL"):
+                        st.code(sql, language="sql")
+
+                    chart = None
+                    if should_render_chart(question, result):
+                        chart = render_chart(question, result)
+                        if chart:
+                            st.plotly_chart(chart, use_container_width=True)
+
+                    with st.expander("View raw data"):
+                        st.dataframe(result, use_container_width=True,
+                                     hide_index=True)
+
                     st.session_state.messages.append({
                         "role": "assistant",
-                        "content": question,
+                        "summary": summary,
                         "sql": sql,
+                        "chart": chart,
                         "df": result
                     })
+
                 except Exception as e:
                     err = f"Could not generate a result: {e}"
                     st.error(err)
