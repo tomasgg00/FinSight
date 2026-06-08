@@ -158,6 +158,50 @@ def get_correlation():
     pivot = df.pivot(index="price_date", columns="ticker", values="daily_return_pct")
     return pivot.corr().round(2)
 
+def get_portfolio_data():
+    holdings = {
+        "EUNL.DE": {"name": "iShares Core MSCI World",    "units": 2,  "avg_cost": 123.57, "target_pct": 5.0},
+        "QDVA.DE": {"name": "iShares MSCI USA Momentum",   "units": 8,  "avg_cost": 18.98,  "target_pct": 5.0},
+        "IS0E.DE": {"name": "iShares Gold Producers",      "units": 10, "avg_cost": 34.48,  "target_pct": 10.0},
+        "DAVV.DE": {"name": "VanEck Crypto & Blockchain",  "units": 15, "avg_cost": 13.908, "target_pct": 5.0},
+        "WTAI":    {"name": "WisdomTree AI & Innovation",  "units": 4,  "avg_cost": 105.80, "target_pct": 10.0},
+        "EXUS":    {"name": "Xtrackers MSCI World ex USA", "units": 7,  "avg_cost": 38.615, "target_pct": 5.0},
+        "XNAS.DE": {"name": "Xtrackers NASDAQ 100",        "units": 36, "avg_cost": 60.25,  "target_pct": 60.0},
+    }
+
+    con = duckdb.connect(DB_PATH, read_only=True)
+    snap = con.execute("SELECT * FROM main_gold.mart_latest_snapshot").df()
+    con.close()
+
+    rows = []
+    for ticker, h in holdings.items():
+        row = snap[snap["ticker"] == ticker]
+        if row.empty:
+            continue
+        price        = row["close_price"].values[0]
+        ret          = row["daily_return_pct"].values[0]
+        sig          = row["trend_signal"].values[0]
+        rsi          = row["rsi_14"].values[0] if "rsi_14" in row.columns else None
+        cost_basis   = h["units"] * h["avg_cost"]
+        market_value = h["units"] * price
+        pnl          = market_value - cost_basis
+        pnl_pct      = (pnl / cost_basis) * 100
+        rows.append({
+            "ticker": ticker, "name": h["name"],
+            "units": h["units"], "avg_cost": h["avg_cost"],
+            "price": price, "cost_basis": cost_basis,
+            "market_value": market_value, "pnl": pnl,
+            "pnl_pct": pnl_pct, "daily_return": ret,
+            "trend_signal": sig, "rsi": rsi,
+            "target_pct": h["target_pct"],
+        })
+
+    df = pd.DataFrame(rows)
+    total_value      = df["market_value"].sum()
+    df["actual_pct"] = (df["market_value"] / total_value * 100).round(2)
+    df["deviation"]  = (df["actual_pct"] - df["target_pct"]).round(2)
+    return df, total_value
+
 def call_ollama(question):
     response = ollama.chat(
         model="mistral",
@@ -172,20 +216,15 @@ def call_ollama(question):
 def summarise_results(question, sql, df):
     if df.empty:
         return "No data found for that question."
-
     data_str = df.to_string(index=False)
-    prompt = f"""You are a financial analyst assistant. 
+    prompt = f"""You are a financial analyst assistant.
 A user asked: "{question}"
-
 The following SQL was run: {sql}
-
 The results are:
 {data_str}
-
-Write a concise 2-3 sentence plain English summary of these results. 
+Write a concise 2-3 sentence plain English summary of these results.
 Be specific — mention actual ticker names, numbers and what they mean.
 Do not mention SQL. Be direct and insightful."""
-
     response = ollama.chat(
         model="mistral",
         messages=[{"role": "user", "content": prompt}]
@@ -195,126 +234,70 @@ Do not mention SQL. Be direct and insightful."""
 def should_render_chart(question, df):
     if df.empty or len(df) < 2:
         return False
-    has_date = any(col in df.columns for col in ["price_date", "date", "latest_date"])
-    has_numeric = df.select_dtypes(include="number").shape[1] > 0
+    has_date     = any(col in df.columns for col in ["price_date", "date", "latest_date"])
+    has_numeric  = df.select_dtypes(include="number").shape[1] > 0
     visual_words = ["show", "chart", "plot", "compare", "trend", "over time",
                     "history", "performance", "vs", "versus"]
-    is_visual_question = any(w in question.lower() for w in visual_words)
-    return (has_date or is_visual_question) and has_numeric
+    is_visual    = any(w in question.lower() for w in visual_words)
+    return (has_date or is_visual) and has_numeric
 
 def render_chart(question, df):
-    date_col = next((c for c in ["price_date", "date", "latest_date"]
-                     if c in df.columns), None)
+    date_col     = next((c for c in ["price_date", "date", "latest_date"] if c in df.columns), None)
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
-
     if date_col and numeric_cols:
-        fig = px.line(
-            df, x=date_col, y=numeric_cols,
-            template="plotly_dark",
-            color_discrete_sequence=["#1D9E75", "#EF9F27", "#7F77DD",
-                                     "#E24B4A", "#534AB7"]
-        )
-        fig.update_layout(
-            paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
-            height=350, margin=dict(l=0, r=0, t=30, b=0),
-            font=dict(color="#888")
-        )
+        fig = px.line(df, x=date_col, y=numeric_cols, template="plotly_dark",
+                      color_discrete_sequence=["#1D9E75","#EF9F27","#7F77DD","#E24B4A","#534AB7"])
+        fig.update_layout(paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
+                          height=350, margin=dict(l=0,r=0,t=30,b=0), font=dict(color="#888"))
         return fig
     elif numeric_cols and "ticker" in df.columns:
-        fig = px.bar(
-            df, x="ticker", y=numeric_cols[0],
-            template="plotly_dark",
-            color_discrete_sequence=["#1D9E75"]
-        )
-        fig.update_layout(
-            paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
-            height=350, margin=dict(l=0, r=0, t=30, b=0),
-            font=dict(color="#888")
-        )
+        fig = px.bar(df, x="ticker", y=numeric_cols[0], template="plotly_dark",
+                     color_discrete_sequence=["#1D9E75"])
+        fig.update_layout(paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
+                          height=350, margin=dict(l=0,r=0,t=30,b=0), font=dict(color="#888"))
         return fig
     return None
 
 def candlestick_chart(history, ticker):
-    fig = make_subplots(
-        rows=3, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.6, 0.2, 0.2],
-        subplot_titles=("", "Daily return %", "RSI (14)")
-    )
-
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2],
+                        subplot_titles=("", "Daily return %", "RSI (14)"))
     if "open_price" in history.columns and history["open_price"].notna().sum() > 10:
         fig.add_trace(go.Candlestick(
             x=history["price_date"],
-            open=history["open_price"],
-            high=history["high_price"],
-            low=history["low_price"],
-            close=history["close_price"],
+            open=history["open_price"], high=history["high_price"],
+            low=history["low_price"],  close=history["close_price"],
             name="Price",
-            increasing_line_color="#1D9E75",
-            decreasing_line_color="#E24B4A",
-            increasing_fillcolor="#1D9E75",
-            decreasing_fillcolor="#E24B4A",
+            increasing_line_color="#1D9E75", decreasing_line_color="#E24B4A",
+            increasing_fillcolor="#1D9E75",  decreasing_fillcolor="#E24B4A",
         ), row=1, col=1)
     else:
-        fig.add_trace(go.Scatter(
-            x=history["price_date"], y=history["close_price"],
-            name="Price", line=dict(color="#1D9E75", width=2)
-        ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=history["price_date"], y=history["ma_20"],
-        name="MA20", line=dict(color="#EF9F27", width=1.5, dash="dot")
-    ), row=1, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=history["price_date"], y=history["ma_50"],
-        name="MA50", line=dict(color="#7F77DD", width=1.5, dash="dot")
-    ), row=1, col=1)
-
+        fig.add_trace(go.Scatter(x=history["price_date"], y=history["close_price"],
+            name="Price", line=dict(color="#1D9E75", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=history["price_date"], y=history["ma_20"],
+        name="MA20", line=dict(color="#EF9F27", width=1.5, dash="dot")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=history["price_date"], y=history["ma_50"],
+        name="MA50", line=dict(color="#7F77DD", width=1.5, dash="dot")), row=1, col=1)
     if "bb_upper" in history.columns and history["bb_upper"].notna().sum() > 10:
-        fig.add_trace(go.Scatter(
-            x=history["price_date"], y=history["bb_upper"],
-            name="BB Upper", line=dict(color="#534AB7", width=1, dash="dash"),
-            opacity=0.6
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            x=history["price_date"], y=history["bb_lower"],
+        fig.add_trace(go.Scatter(x=history["price_date"], y=history["bb_upper"],
+            name="BB Upper", line=dict(color="#534AB7", width=1, dash="dash"), opacity=0.6), row=1, col=1)
+        fig.add_trace(go.Scatter(x=history["price_date"], y=history["bb_lower"],
             name="BB Lower", line=dict(color="#534AB7", width=1, dash="dash"),
-            fill="tonexty", fillcolor="rgba(83,74,183,0.05)",
-            opacity=0.6
-        ), row=1, col=1)
-
-    colors = ["#1D9E75" if v >= 0 else "#E24B4A"
-              for v in history["daily_return_pct"].fillna(0)]
-    fig.add_trace(go.Bar(
-        x=history["price_date"], y=history["daily_return_pct"],
-        name="Return %", marker_color=colors, showlegend=False
-    ), row=2, col=1)
-
+            fill="tonexty", fillcolor="rgba(83,74,183,0.05)", opacity=0.6), row=1, col=1)
+    colors = ["#1D9E75" if v >= 0 else "#E24B4A" for v in history["daily_return_pct"].fillna(0)]
+    fig.add_trace(go.Bar(x=history["price_date"], y=history["daily_return_pct"],
+        name="Return %", marker_color=colors, showlegend=False), row=2, col=1)
     if "rsi_14" in history.columns and history["rsi_14"].notna().sum() > 10:
-        fig.add_trace(go.Scatter(
-            x=history["price_date"], y=history["rsi_14"],
-            name="RSI", line=dict(color="#1D9E75", width=1.5),
-            showlegend=False
-        ), row=3, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="#E24B4A",
-                      opacity=0.6, row=3, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="#1D9E75",
-                      opacity=0.6, row=3, col=1)
-
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#0F1117",
-        plot_bgcolor="#0F1117",
-        height=680,
-        margin=dict(l=0, r=0, t=30, b=0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1),
+        fig.add_trace(go.Scatter(x=history["price_date"], y=history["rsi_14"],
+            name="RSI", line=dict(color="#1D9E75", width=1.5), showlegend=False), row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="#E24B4A", opacity=0.6, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="#1D9E75", opacity=0.6, row=3, col=1)
+    fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
+        height=680, margin=dict(l=0,r=0,t=30,b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis_rangeslider_visible=False,
         font=dict(family="sans-serif", size=12, color="#888"),
-        title=dict(text=ticker, font=dict(size=16, color="#E8E8E8")),
-    )
+        title=dict(text=ticker, font=dict(size=16, color="#E8E8E8")))
     fig.update_xaxes(gridcolor="#1A1D27", showgrid=True)
     fig.update_yaxes(gridcolor="#1A1D27", showgrid=True)
     fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0, 100])
@@ -324,49 +307,26 @@ def heatmap_chart(snapshot):
     metrics = ["pct_from_ma20", "pct_from_ma50", "daily_return_pct"]
     labels  = ["% from MA20", "% from MA50", "Daily return %"]
     matrix  = snapshot.set_index("ticker")[metrics].astype(float)
-
     fig = go.Figure(go.Heatmap(
-        z=matrix.values,
-        x=labels,
-        y=matrix.index.tolist(),
-        colorscale=[[0, "#E24B4A"], [0.5, "#1A1D27"], [1, "#1D9E75"]],
-        zmid=0,
-        text=matrix.values.round(2),
-        texttemplate="%{text}%",
-        showscale=True,
-        colorbar=dict(tickfont=dict(color="#888"))
-    ))
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#0F1117",
-        plot_bgcolor="#0F1117",
-        height=420,
-        margin=dict(l=0, r=0, t=10, b=0),
-        font=dict(color="#888")
-    )
+        z=matrix.values, x=labels, y=matrix.index.tolist(),
+        colorscale=[[0,"#E24B4A"],[0.5,"#1A1D27"],[1,"#1D9E75"]],
+        zmid=0, text=matrix.values.round(2), texttemplate="%{text}%",
+        showscale=True, colorbar=dict(tickfont=dict(color="#888"))))
+    fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117",
+        plot_bgcolor="#0F1117", height=420,
+        margin=dict(l=0,r=0,t=10,b=0), font=dict(color="#888"))
     return fig
 
 def correlation_chart(corr):
     fig = go.Figure(go.Heatmap(
-        z=corr.values,
-        x=corr.columns.tolist(),
-        y=corr.index.tolist(),
-        colorscale=[[0, "#E24B4A"], [0.5, "#1A1D27"], [1, "#1D9E75"]],
-        zmid=0,
-        zmin=-1, zmax=1,
-        text=corr.values,
-        texttemplate="%{text}",
-        showscale=True,
-        colorbar=dict(tickfont=dict(color="#888"))
-    ))
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#0F1117",
-        plot_bgcolor="#0F1117",
-        height=520,
-        margin=dict(l=0, r=0, t=10, b=0),
-        font=dict(color="#888", size=11)
-    )
+        z=corr.values, x=corr.columns.tolist(), y=corr.index.tolist(),
+        colorscale=[[0,"#E24B4A"],[0.5,"#1A1D27"],[1,"#1D9E75"]],
+        zmid=0, zmin=-1, zmax=1,
+        text=corr.values, texttemplate="%{text}",
+        showscale=True, colorbar=dict(tickfont=dict(color="#888"))))
+    fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117",
+        plot_bgcolor="#0F1117", height=520,
+        margin=dict(l=0,r=0,t=10,b=0), font=dict(color="#888", size=11))
     return fig
 
 # ── Sidebar ───────────────────────────────────────────────
@@ -374,11 +334,9 @@ with st.sidebar:
     st.markdown("## 📈 FinSight")
     st.caption("AI-powered market intelligence")
     st.divider()
-    page = st.radio(
-        "Navigate",
-        ["Market overview", "Ticker deep dive", "AI agent"],
-        label_visibility="collapsed"
-    )
+    page = st.radio("Navigate",
+        ["Market overview", "Ticker deep dive", "Portfolio tracker", "AI agent"],
+        label_visibility="collapsed")
     st.divider()
     snapshot = get_snapshot()
     st.caption(f"Last updated: {snapshot['latest_date'].max()}")
@@ -387,7 +345,6 @@ with st.sidebar:
 # ── Page 1: Market Overview ───────────────────────────────
 if page == "Market overview":
     st.markdown("# Market overview")
-
     bullish = len(snapshot[snapshot["trend_signal"] == "bullish"])
     bearish = len(snapshot[snapshot["trend_signal"] == "bearish"])
     neutral = len(snapshot[snapshot["trend_signal"] == "neutral"])
@@ -423,32 +380,23 @@ if page == "Market overview":
             <div class="metric-value {color}">{sign}{avg_ret:.2f}%</div>
         </div>""", unsafe_allow_html=True)
 
-    st.markdown('<p class="section-header">Signal heatmap</p>',
-                unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Signal heatmap</p>', unsafe_allow_html=True)
     st.plotly_chart(heatmap_chart(snapshot), use_container_width=True)
 
-    st.markdown('<p class="section-header">All tickers</p>',
-                unsafe_allow_html=True)
+    st.markdown('<p class="section-header">All tickers</p>', unsafe_allow_html=True)
     for _, row in snapshot.iterrows():
-        sig   = row["trend_signal"]
-        ret   = row["daily_return_pct"]
-        sign  = "+" if ret >= 0 else ""
-        color = "positive" if ret >= 0 else "negative"
-        rsi   = row.get("rsi_14", None)
+        sig     = row["trend_signal"]
+        ret     = row["daily_return_pct"]
+        sign    = "+" if ret >= 0 else ""
+        color   = "positive" if ret >= 0 else "negative"
+        rsi     = row.get("rsi_14", None)
         rsi_str = f"RSI: {rsi:.0f}" if rsi is not None and not pd.isna(rsi) else ""
-
         c1, c2, c3, c4, c5 = st.columns([1.5, 1.5, 1.5, 1.5, 2.5])
         c1.markdown(f"**{row['ticker']}**")
         c2.markdown(f"${row['close_price']:.2f}")
-        c3.markdown(f"<span class='{color}'>{sign}{ret:.2f}%</span>",
-                    unsafe_allow_html=True)
-        c4.markdown(f"<span class='signal-{sig}'>{sig}</span>",
-                    unsafe_allow_html=True)
-        c5.markdown(
-            f"MA20: {row['pct_from_ma20']:.1f}% &nbsp; "
-            f"MA50: {row['pct_from_ma50']:.1f}% &nbsp; {rsi_str}",
-            unsafe_allow_html=True
-        )
+        c3.markdown(f"<span class='{color}'>{sign}{ret:.2f}%</span>", unsafe_allow_html=True)
+        c4.markdown(f"<span class='signal-{sig}'>{sig}</span>", unsafe_allow_html=True)
+        c5.markdown(f"MA20: {row['pct_from_ma20']:.1f}% &nbsp; MA50: {row['pct_from_ma50']:.1f}% &nbsp; {rsi_str}", unsafe_allow_html=True)
         st.divider()
 
 # ── Page 2: Ticker Deep Dive ──────────────────────────────
@@ -458,13 +406,13 @@ elif page == "Ticker deep dive":
     row     = snapshot[snapshot["ticker"] == ticker].iloc[0]
     history = get_history(ticker)
 
-    sig   = row["trend_signal"]
-    ret   = row["daily_return_pct"]
-    sign  = "+" if ret >= 0 else ""
-    color = "positive" if ret >= 0 else "negative"
-    rsi   = row.get("rsi_14", None)
+    sig     = row["trend_signal"]
+    ret     = row["daily_return_pct"]
+    sign    = "+" if ret >= 0 else ""
+    color   = "positive" if ret >= 0 else "negative"
+    rsi     = row.get("rsi_14", None)
     rsi_sig = row.get("rsi_signal", "neutral")
-    vol   = row.get("volatility_30d", 0)
+    vol     = row.get("volatility_30d", 0)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     with c1:
@@ -480,9 +428,7 @@ elif page == "Ticker deep dive":
     with c3:
         st.markdown(f"""<div class="metric-card">
             <div class="metric-label">Signal</div>
-            <div class="metric-value">
-                <span class="signal-{sig}">{sig.upper()}</span>
-            </div>
+            <div class="metric-value"><span class="signal-{sig}">{sig.upper()}</span></div>
         </div>""", unsafe_allow_html=True)
     with c4:
         pct = row["pct_from_ma20"]
@@ -493,8 +439,7 @@ elif page == "Ticker deep dive":
         </div>""", unsafe_allow_html=True)
     with c5:
         rsi_col = ("negative" if rsi_sig == "overbought"
-                   else "positive" if rsi_sig == "oversold"
-                   else "neutral")
+                   else "positive" if rsi_sig == "oversold" else "neutral")
         rsi_val = f"{rsi:.1f}" if rsi is not None and not pd.isna(rsi) else "—"
         st.markdown(f"""<div class="metric-card">
             <div class="metric-label">RSI (14)</div>
@@ -508,30 +453,23 @@ elif page == "Ticker deep dive":
             <div class="metric-value">{vol_val}</div>
         </div>""", unsafe_allow_html=True)
 
-    st.markdown('<p class="section-header">Price chart</p>',
-                unsafe_allow_html=True)
-    st.plotly_chart(candlestick_chart(history, ticker),
-                    use_container_width=True)
+    st.markdown('<p class="section-header">Price chart</p>', unsafe_allow_html=True)
+    st.plotly_chart(candlestick_chart(history, ticker), use_container_width=True)
 
     c1, c2 = st.columns(2)
     with c1:
-        st.markdown('<p class="section-header">Moving averages</p>',
-                    unsafe_allow_html=True)
-        fig = px.line(history, x="price_date", y=["ma_20", "ma_50"],
-                      template="plotly_dark",
-                      color_discrete_map={"ma_20": "#EF9F27",
-                                          "ma_50": "#7F77DD"})
+        st.markdown('<p class="section-header">Moving averages</p>', unsafe_allow_html=True)
+        fig = px.line(history, x="price_date", y=["ma_20", "ma_50"], template="plotly_dark",
+                      color_discrete_map={"ma_20": "#EF9F27", "ma_50": "#7F77DD"})
         fig.update_layout(paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
-                          height=250, margin=dict(l=0, r=0, t=10, b=0))
+                          height=250, margin=dict(l=0,r=0,t=10,b=0))
         st.plotly_chart(fig, use_container_width=True)
     with c2:
-        st.markdown('<p class="section-header">Volume</p>',
-                    unsafe_allow_html=True)
-        fig = px.bar(history, x="price_date", y="volume",
-                     template="plotly_dark",
+        st.markdown('<p class="section-header">Volume</p>', unsafe_allow_html=True)
+        fig = px.bar(history, x="price_date", y="volume", template="plotly_dark",
                      color_discrete_sequence=["#534AB7"])
         fig.update_layout(paper_bgcolor="#0F1117", plot_bgcolor="#0F1117",
-                          height=250, margin=dict(l=0, r=0, t=10, b=0))
+                          height=250, margin=dict(l=0,r=0,t=10,b=0))
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown('<p class="section-header">Correlation matrix — all tickers (1 year)</p>',
@@ -540,7 +478,105 @@ elif page == "Ticker deep dive":
     corr = get_correlation()
     st.plotly_chart(correlation_chart(corr), use_container_width=True)
 
-# ── Page 3: AI Agent ──────────────────────────────────────
+# ── Page 3: Portfolio Tracker ─────────────────────────────
+elif page == "Portfolio tracker":
+    st.markdown("# Portfolio tracker")
+    df, total_value = get_portfolio_data()
+
+    total_cost    = df["cost_basis"].sum()
+    total_pnl     = df["pnl"].sum()
+    total_pnl_pct = (total_pnl / total_cost) * 100
+    daily_pnl     = (df["market_value"] * df["daily_return"] / 100).sum()
+    pnl_color     = "positive" if total_pnl >= 0 else "negative"
+    daily_color   = "positive" if daily_pnl >= 0 else "negative"
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f"""<div class="metric-card">
+            <div class="metric-label">Total value</div>
+            <div class="metric-value">€{total_value:,.2f}</div>
+        </div>""", unsafe_allow_html=True)
+    with c2:
+        sign = "+" if total_pnl >= 0 else ""
+        st.markdown(f"""<div class="metric-card">
+            <div class="metric-label">Total P&L</div>
+            <div class="metric-value {pnl_color}">{sign}€{total_pnl:,.2f}</div>
+            <div class="metric-sub {pnl_color}">{sign}{total_pnl_pct:.2f}%</div>
+        </div>""", unsafe_allow_html=True)
+    with c3:
+        sign = "+" if daily_pnl >= 0 else ""
+        st.markdown(f"""<div class="metric-card">
+            <div class="metric-label">Today's P&L</div>
+            <div class="metric-value {daily_color}">{sign}€{daily_pnl:,.2f}</div>
+        </div>""", unsafe_allow_html=True)
+    with c4:
+        st.markdown(f"""<div class="metric-card">
+            <div class="metric-label">Positions</div>
+            <div class="metric-value">{len(df)}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown('<p class="section-header">Allocation — actual vs target</p>',
+                unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = go.Figure()
+        fig.add_trace(go.Bar(name="Actual %", x=df["ticker"], y=df["actual_pct"],
+                             marker_color="#1D9E75"))
+        fig.add_trace(go.Bar(name="Target %", x=df["ticker"], y=df["target_pct"],
+                             marker_color="#534AB7", opacity=0.6))
+        fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117",
+            plot_bgcolor="#0F1117", barmode="group", height=300,
+            margin=dict(l=0,r=0,t=10,b=0),
+            legend=dict(orientation="h", y=1.1), font=dict(color="#888"))
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        colors = ["#1D9E75" if d >= 0 else "#E24B4A" for d in df["deviation"]]
+        fig = go.Figure(go.Bar(
+            x=df["ticker"], y=df["deviation"], marker_color=colors,
+            text=[f"{d:+.1f}%" for d in df["deviation"]], textposition="outside"))
+        fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117",
+            plot_bgcolor="#0F1117", height=300, margin=dict(l=0,r=0,t=30,b=0),
+            title=dict(text="Deviation from target %", font=dict(color="#888", size=13)),
+            font=dict(color="#888"))
+        fig.add_hline(y=0, line_color="#888", opacity=0.4)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown('<p class="section-header">Portfolio composition</p>',
+                unsafe_allow_html=True)
+    fig = go.Figure(go.Pie(
+        labels=df["ticker"], values=df["market_value"], hole=0.5,
+        marker_colors=["#1D9E75","#EF9F27","#7F77DD","#E24B4A","#534AB7","#0F6E56","#BA7517"],
+        textinfo="label+percent",
+        hovertemplate="<b>%{label}</b><br>€%{value:,.2f}<br>%{percent}<extra></extra>"
+    ))
+    fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117",
+        plot_bgcolor="#0F1117", height=380,
+        margin=dict(l=0,r=0,t=10,b=0), font=dict(color="#888"), showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown('<p class="section-header">Holdings detail</p>',
+                unsafe_allow_html=True)
+    for _, row in df.iterrows():
+        sig     = row["trend_signal"]
+        pnl_col = "positive" if row["pnl"] >= 0 else "negative"
+        sign    = "+" if row["pnl"] >= 0 else ""
+        d_sign  = "+" if row["deviation"] >= 0 else ""
+        d_col   = "positive" if row["deviation"] >= 0 else "negative"
+        c1, c2, c3, c4, c5, c6 = st.columns([2, 1.2, 1.2, 1.5, 1.5, 1.5])
+        c1.markdown(f"**{row['ticker']}**  \n<span style='color:#888;font-size:12px'>{row['name']}</span>",
+                    unsafe_allow_html=True)
+        c2.markdown(f"**€{row['market_value']:,.2f}**  \n<span style='color:#888;font-size:12px'>{row['units']} units @ €{row['avg_cost']:.2f}</span>",
+                    unsafe_allow_html=True)
+        c3.markdown(f"<span class='{pnl_col}'>{sign}€{row['pnl']:,.2f}</span>  \n<span class='{pnl_col}' style='font-size:12px'>{sign}{row['pnl_pct']:.2f}%</span>",
+                    unsafe_allow_html=True)
+        c4.markdown(f"<span class='signal-{sig}'>{sig}</span>", unsafe_allow_html=True)
+        c5.markdown(f"Actual: **{row['actual_pct']:.1f}%**  \nTarget: {row['target_pct']:.1f}%",
+                    unsafe_allow_html=True)
+        c6.markdown(f"<span class='{d_col}'>{d_sign}{row['deviation']:.1f}%</span>",
+                    unsafe_allow_html=True)
+        st.divider()
+
+# ── Page 4: AI Agent ──────────────────────────────────────
 elif page == "AI agent":
     st.markdown("# AI agent")
     st.caption("Ask anything about the market in plain English")
@@ -578,8 +614,7 @@ elif page == "AI agent":
                     st.plotly_chart(msg["chart"], use_container_width=True)
                 if msg.get("df") is not None:
                     with st.expander("View raw data"):
-                        st.dataframe(msg["df"], use_container_width=True,
-                                     hide_index=True)
+                        st.dataframe(msg["df"], use_container_width=True, hide_index=True)
             else:
                 st.markdown(msg["content"])
 
@@ -588,8 +623,7 @@ elif page == "AI agent":
         question = st.session_state.pop("pending_question")
 
     if question:
-        st.session_state.messages.append({"role": "user",
-                                           "content": question})
+        st.session_state.messages.append({"role": "user", "content": question})
         with st.chat_message("user"):
             st.markdown(question)
 
@@ -614,8 +648,7 @@ elif page == "AI agent":
                             st.plotly_chart(chart, use_container_width=True)
 
                     with st.expander("View raw data"):
-                        st.dataframe(result, use_container_width=True,
-                                     hide_index=True)
+                        st.dataframe(result, use_container_width=True, hide_index=True)
 
                     st.session_state.messages.append({
                         "role": "assistant",
@@ -628,6 +661,4 @@ elif page == "AI agent":
                 except Exception as e:
                     err = f"Could not generate a result: {e}"
                     st.error(err)
-                    st.session_state.messages.append({
-                        "role": "assistant", "content": err
-                    })
+                    st.session_state.messages.append({"role": "assistant", "content": err})
