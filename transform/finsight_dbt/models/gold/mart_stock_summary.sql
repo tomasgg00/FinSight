@@ -1,3 +1,10 @@
+{{
+    config(
+        materialized='incremental',
+        unique_key=['ticker', 'price_date']
+    )
+}}
+
 with silver as (
     select * from {{ ref('int_prices_enriched') }}
 ),
@@ -34,3 +41,7 @@ summary as (
 )
 
 select * from summary
+
+{% if is_incremental() %}
+    where price_date > (select max(price_date) from {{ this }})
+{% endif %}

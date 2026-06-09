@@ -1,3 +1,10 @@
+{{
+    config(
+        materialized='incremental',
+        unique_key=['ticker', 'price_date']
+    )
+}}
+
 with base as (
     select * from {{ ref('stg_prices') }}
 ),
@@ -51,7 +58,7 @@ step1 as (
     from base
 ),
 
--- Step 2: compute daily return and price change using lag (no nesting)
+-- Step 2: daily return and price change
 step2 as (
     select
         *,
@@ -70,7 +77,7 @@ step2 as (
     from step1
 ),
 
--- Step 3: RSI gains and losses (now price_change is a plain column, no nesting)
+-- Step 3: RSI gains and losses
 step3 as (
     select
         *,
@@ -124,3 +131,7 @@ select
     ingested_at
 
 from step4
+
+{% if is_incremental() %}
+    where price_date > (select max(price_date) from {{ this }})
+{% endif %}
