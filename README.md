@@ -220,4 +220,10 @@ FinSight/
 
 ---
 
+## Links
+- 📊 **dbt docs**: https://tomasgg00.github.io/FinSight
+- 🚀 **Live app**: coming soon
+
+---
+
 *Built by [Tomás Gonçalves](https://github.com/tomasgg00)*
