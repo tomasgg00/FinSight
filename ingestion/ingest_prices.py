@@ -145,11 +145,14 @@ def ingest_prices():
                 close       DOUBLE,
                 volume      BIGINT,
                 ticker      VARCHAR,
-                ingested_at TIMESTAMP
+                ingested_at TIMESTAMP,
+                PRIMARY KEY (ticker, date)
             )
         """)
-        con.execute("DELETE FROM raw_prices")
-        con.execute("INSERT INTO raw_prices SELECT * FROM df_all")
+        con.execute("""
+            INSERT OR REPLACE INTO raw_prices
+            SELECT * FROM df_all
+        """)
         total_rows = con.execute("SELECT COUNT(*) FROM raw_prices").fetchone()[0]
         print(f"\n  Loaded {total_rows} rows into raw_prices")
     else:
