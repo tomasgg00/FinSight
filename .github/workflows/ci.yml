@@ -1,0 +1,52 @@
+name: CI — dbt tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dbt-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install dbt-duckdb duckdb pandas yfinance requests
+
+      - name: Run ingestion
+        run: python ingestion/ingest_prices.py
+
+      - name: Set up dbt profile
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          finsight_dbt:
+            target: dev
+            outputs:
+              dev:
+                type: duckdb
+                path: ${{ github.workspace }}/data/finsight.duckdb
+                threads: 4
+          EOF
+
+      - name: dbt run + test
+        working-directory: transform/finsight_dbt
+        run: |
+          dbt run
+          dbt test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-test-results
+          path: transform/finsight_dbt/target/run_results.json

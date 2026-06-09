@@ -1,0 +1,52 @@
+name: Daily pipeline
+
+on:
+  schedule:
+    - cron: '0 7 * * 1-5'  # 7am UTC, Monday to Friday
+  workflow_dispatch:         # allows manual trigger from GitHub UI
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance duckdb pandas requests dbt-duckdb
+
+      - name: Run ingestion
+        run: python ingestion/ingest_prices.py
+
+      - name: Set up dbt profile
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          finsight_dbt:
+            target: dev
+            outputs:
+              dev:
+                type: duckdb
+                path: ${{ github.workspace }}/data/finsight.duckdb
+                threads: 4
+          EOF
+
+      - name: Run dbt
+        working-directory: transform/finsight_dbt
+        run: |
+          dbt run
+          dbt test
+
+      - name: Upload DuckDB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: finsight-db
+          path: data/finsight.duckdb
+          retention-days: 7

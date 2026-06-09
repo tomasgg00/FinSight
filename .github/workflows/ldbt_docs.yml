@@ -1,0 +1,57 @@
+name: dbt docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  generate-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dbt
+        run: pip install dbt-duckdb duckdb pandas
+
+      - name: Run ingestion to populate DB
+        run: python ingestion/ingest_prices.py
+
+      - name: Set up dbt profile
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          finsight_dbt:
+            target: dev
+            outputs:
+              dev:
+                type: duckdb
+                path: ${{ github.workspace }}/data/finsight.duckdb
+                threads: 4
+          EOF
+
+      - name: Generate dbt docs
+        working-directory: transform/finsight_dbt
+        run: |
+          dbt run
+          dbt docs generate
+
+      - name: Copy docs to gh-pages folder
+        run: |
+          mkdir -p gh-pages
+          cp transform/finsight_dbt/target/index.html gh-pages/
+          cp transform/finsight_dbt/target/manifest.json gh-pages/
+          cp transform/finsight_dbt/target/catalog.json gh-pages/
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./gh-pages
