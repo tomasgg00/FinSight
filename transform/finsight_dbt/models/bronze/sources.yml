@@ -2,31 +2,60 @@ version: 2
 
 sources:
   - name: main
-    description: Raw tables landed by the ingestion layer
+    description: >
+      Raw tables landed by the Python ingestion layer directly into DuckDB.
+      These tables are append-only and should never be modified by dbt.
     tables:
       - name: raw_prices
-        description: Raw OHLCV prices from Yahoo Finance
+        description: >
+          Raw OHLCV (Open, High, Low, Close, Volume) price data ingested from
+          Yahoo Finance via yfinance. One row per ticker per trading day.
+          Refreshed daily by the ingestion pipeline.
         columns:
-          - name: ticker
-            description: Stock ticker symbol
           - name: date
-            description: Trading date
+            description: Trading date for this price record
+          - name: ticker
+            description: Stock or ETF ticker symbol (e.g. AAPL, EUNL.DE)
+          - name: open
+            description: Opening price for the trading day in local currency
+          - name: high
+            description: Intraday high price for the trading day
+          - name: low
+            description: Intraday low price for the trading day
           - name: close
-            description: Closing price
+            description: Adjusted closing price — accounts for splits and dividends
+          - name: volume
+            description: Number of shares traded during the day
+          - name: ingested_at
+            description: Timestamp when this row was written to DuckDB by the pipeline
 
 models:
   - name: stg_prices
-    description: Cleaned and renamed price data from raw_prices
+    description: >
+      Staged price data from raw_prices. Renames columns to a consistent
+      snake_case convention, casts types explicitly, and removes ambiguity
+      from the raw source. This model is a view — it adds no storage cost
+      and always reflects the latest raw data.
     columns:
       - name: price_date
-        description: Trading date
+        description: Trading date, cast to DATE type
         data_tests:
           - not_null
       - name: ticker
-        description: Stock ticker symbol
+        description: Stock or ETF ticker symbol
         data_tests:
           - not_null
+      - name: open_price
+        description: Opening price cast to DOUBLE
+      - name: high_price
+        description: Intraday high price cast to DOUBLE
+      - name: low_price
+        description: Intraday low price cast to DOUBLE
       - name: close_price
-        description: Adjusted closing price
+        description: Adjusted closing price cast to DOUBLE
         data_tests:
           - not_null
+      - name: volume
+        description: Trading volume cast to BIGINT
+      - name: ingested_at
+        description: Pipeline ingestion timestamp

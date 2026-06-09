@@ -2,17 +2,56 @@ version: 2
 
 models:
   - name: int_prices_enriched
-    description: Price data enriched with returns, moving averages and volatility
+    description: >
+      Core enrichment model for the Silver layer. Takes staged prices and
+      computes all technical indicators used downstream. Uses a multi-CTE
+      approach to work around DuckDB's restriction on nested window functions.
+      Materialised as an incremental table — only new trading days are
+      processed on each pipeline run.
+
+      Technical indicators computed:
+        - 20 and 50-day simple moving averages (MA20, MA50)
+        - Bollinger Bands (20-day, ±2 standard deviations)
+        - RSI (14-period Wilder's smoothing via avg gain/loss)
+        - 30-day rolling volatility (standard deviation of daily returns)
+        - Daily return percentage vs previous close
     columns:
       - name: price_date
+        description: Trading date
         data_tests:
           - not_null
       - name: ticker
+        description: Stock or ETF ticker symbol
         data_tests:
           - not_null
+      - name: close_price
+        description: Adjusted closing price in local currency
       - name: daily_return_pct
-        description: Daily percentage return vs previous close
+        description: >
+          Percentage return vs the previous trading day's close price.
+          Null for the first row of each ticker (no prior close to compare).
       - name: ma_20
-        description: 20-day simple moving average of close price
+        description: >
+          20-day simple moving average of close price. Requires at least
+          20 prior trading days — null for early rows in the history.
       - name: ma_50
-        description: 50-day simple moving average of close price
+        description: >
+          50-day simple moving average of close price. Requires at least
+          50 prior trading days — null for early rows in the history.
+      - name: bb_upper
+        description: Upper Bollinger Band — MA20 plus 2 standard deviations
+      - name: bb_lower
+        description: Lower Bollinger Band — MA20 minus 2 standard deviations
+      - name: rsi_14
+        description: >
+          14-period Relative Strength Index. Values above 70 indicate
+          overbought conditions; below 30 indicates oversold. Computed
+          using average gain and average loss over the prior 14 periods.
+      - name: volatility_30d
+        description: >
+          30-day rolling standard deviation of daily_return_pct.
+          Higher values indicate more volatile price action.
+      - name: daily_range
+        description: Intraday price range — high minus low for the day
+      - name: avg_volume_20d
+        description: 20-day rolling average of daily trading volume

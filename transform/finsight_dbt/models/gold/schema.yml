@@ -2,28 +2,84 @@ version: 2
 
 models:
   - name: mart_stock_summary
-    description: Daily stock metrics with trend signals and volume analysis
+    description: >
+      Daily fact table for all tracked tickers. Combines enriched technical
+      indicators from the Silver layer with business-level signals for
+      use by the dashboard and AI agent. Materialised as an incremental
+      table — only new trading days are appended on each pipeline run.
+
+      This is the primary table for historical analysis and charting.
     columns:
       - name: price_date
+        description: Trading date
         data_tests:
           - not_null
       - name: ticker
+        description: Stock or ETF ticker symbol
         data_tests:
           - not_null
       - name: trend_signal
-        description: bullish / bearish / neutral based on MA crossover
+        description: >
+          MA crossover signal derived from close price vs MA20 and MA50.
+          bullish = price above both moving averages.
+          bearish = price below both moving averages.
+          neutral = price between the two moving averages.
         data_tests:
           - not_null
           - accepted_values:
               values: ['bullish', 'bearish', 'neutral']
+      - name: volume_spike
+        description: >
+          True when daily volume exceeds 1.5x the 20-day average volume.
+          Indicates unusual trading activity — potential catalyst event.
+      - name: rsi_14
+        description: 14-period RSI carried through from Silver layer
+      - name: volatility_30d
+        description: 30-day rolling volatility carried through from Silver layer
+      - name: bb_upper
+        description: Upper Bollinger Band carried through from Silver layer
+      - name: bb_lower
+        description: Lower Bollinger Band carried through from Silver layer
 
   - name: mart_latest_snapshot
-    description: Most recent trading day snapshot for each ticker
+    description: >
+      Current state mart — one row per ticker showing the most recent
+      trading day's metrics and signals. This is the primary table for
+      the dashboard overview page and the AI agent's current-state queries.
+
+      Adds two derived distance metrics (pct_from_ma20, pct_from_ma50)
+      and a human-readable rsi_signal label on top of the daily summary.
     columns:
       - name: ticker
+        description: Stock or ETF ticker symbol — unique per row
         data_tests:
           - not_null
           - unique
+      - name: latest_date
+        description: Most recent trading date available for this ticker
       - name: trend_signal
+        description: >
+          Current MA crossover signal.
+          bullish = price above both MA20 and MA50.
+          bearish = price below both MA20 and MA50.
+          neutral = price between the two averages.
         data_tests:
           - not_null
+      - name: pct_from_ma20
+        description: >
+          Percentage distance of current close price from the 20-day
+          moving average. Positive = price above MA20 (momentum).
+          Negative = price below MA20 (weakness).
+      - name: pct_from_ma50
+        description: >
+          Percentage distance of current close price from the 50-day
+          moving average. A wider positive spread indicates stronger
+          longer-term uptrend.
+      - name: rsi_signal
+        description: >
+          Human-readable RSI condition label.
+          overbought = RSI >= 70 (potential reversal risk).
+          oversold   = RSI <= 30 (potential recovery opportunity).
+          neutral    = RSI between 30 and 70.
+      - name: volume_spike
+        description: True if today's volume exceeded 1.5x the 20-day average
