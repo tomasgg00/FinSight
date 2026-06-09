@@ -14,6 +14,7 @@ import duckdb
 import pandas as pd
 import requests
 from datetime import datetime
+from schemas import PriceRecord
 
 TICKERS = [
     "AAPL", "MSFT", "GOOGL", "AMZN", "JPM", "GS", "BAC",
@@ -51,6 +52,24 @@ def init_observability(con):
         )
     """)
 
+def validate_dataframe(df, ticker):
+    validation_errors = 0
+    for _, row in df.iterrows():
+        try:
+            PriceRecord(
+                date=row["date"],
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+                volume=int(row["volume"]),
+                ticker=ticker,
+                ingested_at=row["ingested_at"]
+            )
+        except Exception as e:
+            validation_errors += 1
+    return validation_errors
+
 def ingest_prices():
     run_id    = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_start = datetime.now()
@@ -76,6 +95,14 @@ def ingest_prices():
             df.columns = [c.lower().replace(" ", "_") for c in df.columns]
             df["ticker"]      = ticker
             df["ingested_at"] = datetime.now()
+
+            # Pydantic schema validation
+            validation_errors = validate_dataframe(df, ticker)
+            if validation_errors > 0:
+                print(f"    WARNING: {validation_errors} rows failed schema validation")
+            else:
+                print(f"    All {len(df)} rows passed schema validation")
+
             all_data.append(df)
 
             run_details.append({
