@@ -22,7 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance duckdb pandas requests dbt-duckdb
+        run: pip install yfinance duckdb pandas requests dbt-duckdb ollama pydantic
 
       - name: Create data directory
         run: mkdir -p data
@@ -47,7 +47,11 @@ jobs:
         working-directory: transform/finsight_dbt
         run: |
           dbt run
+          dbt snapshot
           dbt test
+
+      - name: Generate daily market summary
+        run: python ingestion/generate_summary.py
 
       - name: Upload DuckDB artifact
         uses: actions/upload-artifact@v4
