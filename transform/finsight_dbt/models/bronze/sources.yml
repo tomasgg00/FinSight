@@ -1,0 +1,32 @@
+version: 2
+
+sources:
+  - name: main
+    description: Raw tables landed by the ingestion layer
+    tables:
+      - name: raw_prices
+        description: Raw OHLCV prices from Yahoo Finance
+        columns:
+          - name: ticker
+            description: Stock ticker symbol
+          - name: date
+            description: Trading date
+          - name: close
+            description: Closing price
+
+models:
+  - name: stg_prices
+    description: Cleaned and renamed price data from raw_prices
+    columns:
+      - name: price_date
+        description: Trading date
+        data_tests:
+          - not_null
+      - name: ticker
+        description: Stock ticker symbol
+        data_tests:
+          - not_null
+      - name: close_price
+        description: Adjusted closing price
+        data_tests:
+          - not_null

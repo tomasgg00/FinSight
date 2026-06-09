@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: int_prices_enriched
+    description: Price data enriched with returns, moving averages and volatility
+    columns:
+      - name: price_date
+        data_tests:
+          - not_null
+      - name: ticker
+        data_tests:
+          - not_null
+      - name: daily_return_pct
+        description: Daily percentage return vs previous close
+      - name: ma_20
+        description: 20-day simple moving average of close price
+      - name: ma_50
+        description: 50-day simple moving average of close price

@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: mart_stock_summary
+    description: Daily stock metrics with trend signals and volume analysis
+    columns:
+      - name: price_date
+        data_tests:
+          - not_null
+      - name: ticker
+        data_tests:
+          - not_null
+      - name: trend_signal
+        description: bullish / bearish / neutral based on MA crossover
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['bullish', 'bearish', 'neutral']
+
+  - name: mart_latest_snapshot
+    description: Most recent trading day snapshot for each ticker
+    columns:
+      - name: ticker
+        data_tests:
+          - not_null
+          - unique
+      - name: trend_signal
+        data_tests:
+          - not_null
