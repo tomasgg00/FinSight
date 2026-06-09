@@ -2,8 +2,11 @@ name: Daily pipeline
 
 on:
   schedule:
-    - cron: '0 7 * * 1-5'  # 7am UTC, Monday to Friday
-  workflow_dispatch:         # allows manual trigger from GitHub UI
+    - cron: '0 7 * * 1-5'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   run-pipeline:
@@ -19,8 +22,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install yfinance duckdb pandas requests dbt-duckdb
+        run: pip install yfinance duckdb pandas requests dbt-duckdb
+
+      - name: Create data directory
+        run: mkdir -p data
 
       - name: Run ingestion
         run: python ingestion/ingest_prices.py

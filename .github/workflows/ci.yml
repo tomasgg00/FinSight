@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   dbt-test:
     runs-on: ubuntu-latest
@@ -21,6 +24,9 @@ jobs:
 
       - name: Install dependencies
         run: pip install dbt-duckdb duckdb pandas yfinance requests
+
+      - name: Create data directory
+        run: mkdir -p data
 
       - name: Run ingestion
         run: python ingestion/ingest_prices.py
