@@ -118,7 +118,7 @@ Rules:
 - For 'this year' ALWAYS use: price_date >= '2026-01-01'
 - For 'last 6 months' use: price_date >= current_date - interval '6 months'
 - For 'last month' use: price_date >= current_date - interval '1 month'
-- Today's date is 2026-06-08
+- Today's date is 2026-06-09
 - For price trends always SELECT price_date, ticker, close_price
 """
 
@@ -199,11 +199,9 @@ def get_portfolio_data():
         "EXUS":    {"name": "Xtrackers MSCI World ex USA", "units": 7,  "avg_cost": 38.615, "target_pct": 5.0},
         "XNAS.DE": {"name": "Xtrackers NASDAQ 100",        "units": 36, "avg_cost": 60.25,  "target_pct": 60.0},
     }
-
     con = duckdb.connect(DB_PATH, read_only=True)
     snap = con.execute("SELECT * FROM main_gold.mart_latest_snapshot").df()
     con.close()
-
     rows = []
     for ticker, h in holdings.items():
         row = snap[snap["ticker"] == ticker]
@@ -226,35 +224,86 @@ def get_portfolio_data():
             "trend_signal": sig, "rsi": rsi,
             "target_pct": h["target_pct"],
         })
-
     df = pd.DataFrame(rows)
     total_value      = df["market_value"].sum()
     df["actual_pct"] = (df["market_value"] / total_value * 100).round(2)
     df["deviation"]  = (df["actual_pct"] - df["target_pct"]).round(2)
     return df, total_value
 
-def call_ollama(question):
-    response = ollama.chat(
-        model="mistral",
-        messages=[
-            {"role": "system", "content": SCHEMA},
-            {"role": "user",   "content": f"Question: {question}\n\nSQL:"}
-        ]
-    )
+def call_ollama(question, history=None):
+    messages = [{"role": "system", "content": SCHEMA}]
+    if history:
+        for msg in history:
+            if msg["role"] == "user":
+                messages.append({"role": "user", "content": msg["content"]})
+            elif msg["role"] == "assistant" and msg.get("sql"):
+                messages.append({
+                    "role": "assistant",
+                    "content": f"I ran this SQL: {msg['sql']}"
+                })
+    messages.append({
+        "role": "user",
+        "content": f"Question: {question}\n\nRespond with ONLY a valid DuckDB SQL query. No explanation. No text. Just SQL starting with SELECT."
+    })
+    response = ollama.chat(model="mistral", messages=messages)
     sql = response["message"]["content"].strip()
-    return sql.replace("```sql", "").replace("```", "").strip()
+    sql = sql.replace("```sql", "").replace("```", "").strip()
+    # Clean common LLM unicode mistakes
+    sql = sql.replace("≥", ">=").replace("≤", "<=").replace("–", "-").replace("\u2019", "'").replace("\u2018", "'")
+    if not sql.upper().startswith("SELECT"):
+        first_select = sql.upper().find("SELECT")
+        if first_select != -1:
+            sql = sql[first_select:]
+        else:
+            raise ValueError(f"Model did not return valid SQL: {sql[:100]}")
+    return sql
 
-def summarise_results(question, sql, df):
+def fix_sql(sql, error, question, history=None):
+    messages = [
+        {"role": "system", "content": SCHEMA},
+        {"role": "user", "content": f"""Question: {question}
+
+You generated this SQL:
+{sql}
+
+It failed with this error:
+{error}
+
+Fix rules:
+- Use >= not ≥
+- If using AVG/SUM/COUNT with ticker, always GROUP BY ticker
+- Return ONLY the corrected SQL starting with SELECT
+- No explanation, no text, just SQL"""}
+    ]
+    response = ollama.chat(model="mistral", messages=messages)
+    fixed = response["message"]["content"].strip()
+    fixed = fixed.replace("```sql", "").replace("```", "").strip()
+    fixed = fixed.replace("≥", ">=").replace("≤", "<=").replace("–", "-").replace("'", "'").replace("'", "'")
+    if not fixed.upper().startswith("SELECT"):
+        first_select = fixed.upper().find("SELECT")
+        if first_select != -1:
+            fixed = fixed[first_select:]
+    return fixed
+
+def summarise_results(question, sql, df, history=None):
     if df.empty:
         return "No data found for that question."
     data_str = df.to_string(index=False)
+    context = ""
+    if history:
+        recent = [m for m in history[-4:] if m["role"] == "assistant" and m.get("summary")]
+        if recent:
+            context = "Previous answers in this conversation:\n"
+            context += "\n".join([m["summary"] for m in recent])
+            context += "\n\n"
     prompt = f"""You are a financial analyst assistant.
-A user asked: "{question}"
-The following SQL was run: {sql}
-The results are:
+{context}The user just asked: "{question}"
+SQL result:
 {data_str}
-Write a concise 2-3 sentence plain English summary of these results.
-Be specific — mention actual ticker names, numbers and what they mean.
+
+Write a concise 2-3 sentence plain English summary.
+Be specific — mention ticker names and numbers.
+If this is a follow-up question, reference the previous context naturally.
 Do not mention SQL. Be direct and insightful."""
     response = ollama.chat(
         model="mistral",
@@ -375,13 +424,10 @@ with st.sidebar:
     latest_date = pd.to_datetime(snapshot['latest_date'].max()).date()
     today       = date.today()
     days_stale  = (today - latest_date).days
-
-    # account for weekends — data is never updated Sat/Sun
     business_days_stale = sum(
         1 for i in range(days_stale)
         if (today - timedelta(days=i+1)).weekday() < 5
     )
-
     if business_days_stale == 0:
         st.success("Data is current")
     elif business_days_stale == 1:
@@ -395,6 +441,7 @@ with st.sidebar:
 # ── Page 1: Market Overview ───────────────────────────────
 if page == "Market overview":
     st.markdown("# Market overview")
+
     summary_df = get_market_summary()
     if not summary_df.empty:
         row = summary_df.iloc[0]
@@ -413,6 +460,7 @@ if page == "Market overview":
             </div>
         </div>
         """, unsafe_allow_html=True)
+
     bullish = len(snapshot[snapshot["trend_signal"] == "bullish"])
     bearish = len(snapshot[snapshot["trend_signal"] == "bearish"])
     neutral = len(snapshot[snapshot["trend_signal"] == "neutral"])
@@ -583,34 +631,27 @@ elif page == "Portfolio tracker":
             <div class="metric-value">{len(df)}</div>
         </div>""", unsafe_allow_html=True)
 
-    st.markdown('<p class="section-header">Allocation — actual vs target</p>',
-                unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Allocation — actual vs target</p>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         fig = go.Figure()
-        fig.add_trace(go.Bar(name="Actual %", x=df["ticker"], y=df["actual_pct"],
-                             marker_color="#1D9E75"))
-        fig.add_trace(go.Bar(name="Target %", x=df["ticker"], y=df["target_pct"],
-                             marker_color="#534AB7", opacity=0.6))
+        fig.add_trace(go.Bar(name="Actual %", x=df["ticker"], y=df["actual_pct"], marker_color="#1D9E75"))
+        fig.add_trace(go.Bar(name="Target %", x=df["ticker"], y=df["target_pct"], marker_color="#534AB7", opacity=0.6))
         fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117",
             plot_bgcolor="#0F1117", barmode="group", height=300,
-            margin=dict(l=0,r=0,t=10,b=0),
-            legend=dict(orientation="h", y=1.1), font=dict(color="#888"))
+            margin=dict(l=0,r=0,t=10,b=0), legend=dict(orientation="h", y=1.1), font=dict(color="#888"))
         st.plotly_chart(fig, use_container_width=True)
     with c2:
         colors = ["#1D9E75" if d >= 0 else "#E24B4A" for d in df["deviation"]]
-        fig = go.Figure(go.Bar(
-            x=df["ticker"], y=df["deviation"], marker_color=colors,
+        fig = go.Figure(go.Bar(x=df["ticker"], y=df["deviation"], marker_color=colors,
             text=[f"{d:+.1f}%" for d in df["deviation"]], textposition="outside"))
         fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117",
             plot_bgcolor="#0F1117", height=300, margin=dict(l=0,r=0,t=30,b=0),
-            title=dict(text="Deviation from target %", font=dict(color="#888", size=13)),
-            font=dict(color="#888"))
+            title=dict(text="Deviation from target %", font=dict(color="#888", size=13)), font=dict(color="#888"))
         fig.add_hline(y=0, line_color="#888", opacity=0.4)
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<p class="section-header">Portfolio composition</p>',
-                unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Portfolio composition</p>', unsafe_allow_html=True)
     fig = go.Figure(go.Pie(
         labels=df["ticker"], values=df["market_value"], hole=0.5,
         marker_colors=["#1D9E75","#EF9F27","#7F77DD","#E24B4A","#534AB7","#0F6E56","#BA7517"],
@@ -618,12 +659,11 @@ elif page == "Portfolio tracker":
         hovertemplate="<b>%{label}</b><br>€%{value:,.2f}<br>%{percent}<extra></extra>"
     ))
     fig.update_layout(template="plotly_dark", paper_bgcolor="#0F1117",
-        plot_bgcolor="#0F1117", height=380,
-        margin=dict(l=0,r=0,t=10,b=0), font=dict(color="#888"), showlegend=False)
+        plot_bgcolor="#0F1117", height=380, margin=dict(l=0,r=0,t=10,b=0),
+        font=dict(color="#888"), showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<p class="section-header">Holdings detail</p>',
-                unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Holdings detail</p>', unsafe_allow_html=True)
     for _, row in df.iterrows():
         sig     = row["trend_signal"]
         pnl_col = "positive" if row["pnl"] >= 0 else "negative"
@@ -631,17 +671,12 @@ elif page == "Portfolio tracker":
         d_sign  = "+" if row["deviation"] >= 0 else ""
         d_col   = "positive" if row["deviation"] >= 0 else "negative"
         c1, c2, c3, c4, c5, c6 = st.columns([2, 1.2, 1.2, 1.5, 1.5, 1.5])
-        c1.markdown(f"**{row['ticker']}**  \n<span style='color:#888;font-size:12px'>{row['name']}</span>",
-                    unsafe_allow_html=True)
-        c2.markdown(f"**€{row['market_value']:,.2f}**  \n<span style='color:#888;font-size:12px'>{row['units']} units @ €{row['avg_cost']:.2f}</span>",
-                    unsafe_allow_html=True)
-        c3.markdown(f"<span class='{pnl_col}'>{sign}€{row['pnl']:,.2f}</span>  \n<span class='{pnl_col}' style='font-size:12px'>{sign}{row['pnl_pct']:.2f}%</span>",
-                    unsafe_allow_html=True)
+        c1.markdown(f"**{row['ticker']}**  \n<span style='color:#888;font-size:12px'>{row['name']}</span>", unsafe_allow_html=True)
+        c2.markdown(f"**€{row['market_value']:,.2f}**  \n<span style='color:#888;font-size:12px'>{row['units']} units @ €{row['avg_cost']:.2f}</span>", unsafe_allow_html=True)
+        c3.markdown(f"<span class='{pnl_col}'>{sign}€{row['pnl']:,.2f}</span>  \n<span class='{pnl_col}' style='font-size:12px'>{sign}{row['pnl_pct']:.2f}%</span>", unsafe_allow_html=True)
         c4.markdown(f"<span class='signal-{sig}'>{sig}</span>", unsafe_allow_html=True)
-        c5.markdown(f"Actual: **{row['actual_pct']:.1f}%**  \nTarget: {row['target_pct']:.1f}%",
-                    unsafe_allow_html=True)
-        c6.markdown(f"<span class='{d_col}'>{d_sign}{row['deviation']:.1f}%</span>",
-                    unsafe_allow_html=True)
+        c5.markdown(f"Actual: **{row['actual_pct']:.1f}%**  \nTarget: {row['target_pct']:.1f}%", unsafe_allow_html=True)
+        c6.markdown(f"<span class='{d_col}'>{d_sign}{row['deviation']:.1f}%</span>", unsafe_allow_html=True)
         st.divider()
 
 # ── Page 4: AI Agent ──────────────────────────────────────
@@ -657,8 +692,7 @@ elif page == "AI agent":
         "Most volatile ticker in the last 6 months?",
     ]
 
-    st.markdown('<p class="section-header">Suggested questions</p>',
-                unsafe_allow_html=True)
+    st.markdown('<p class="section-header">Suggested questions</p>', unsafe_allow_html=True)
     cols = st.columns(len(suggestions))
     for i, s in enumerate(suggestions):
         if cols[i].button(s, use_container_width=True):
@@ -698,12 +732,18 @@ elif page == "AI agent":
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
-                    sql = call_ollama(question)
+                    history = st.session_state.messages[:-1]
+                    sql = call_ollama(question, history=history)
                     con = duckdb.connect(DB_PATH, read_only=True)
-                    result = con.execute(sql).df()
+                    try:
+                        result = con.execute(sql).df()
+                    except Exception as sql_err:
+                        print(f"  SQL error, attempting fix: {sql_err}")
+                        sql = fix_sql(sql, str(sql_err), question, history)
+                        result = con.execute(sql).df()
                     con.close()
 
-                    summary = summarise_results(question, sql, result)
+                    summary = summarise_results(question, sql, result, history=history)
                     st.markdown(summary)
 
                     with st.expander("View SQL"):
@@ -729,4 +769,6 @@ elif page == "AI agent":
                 except Exception as e:
                     err = f"Could not generate a result: {e}"
                     st.error(err)
-                    st.session_state.messages.append({"role": "assistant", "content": err})
+                    st.session_state.messages.append({
+                        "role": "assistant", "content": err
+                    })
