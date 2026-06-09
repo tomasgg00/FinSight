@@ -1,5 +1,10 @@
 # 📈 FinSight — AI-Powered Market Intelligence Platform
 
+![CI](https://github.com/tomasgg00/FinSight/actions/workflows/ci.yml/badge.svg)
+![dbt docs](https://github.com/tomasgg00/FinSight/actions/workflows/dbt_docs.yml/badge.svg)
+![Daily pipeline](https://github.com/tomasgg00/FinSight/actions/workflows/daily_pipeline.yml/badge.svg)
+[![dbt docs site](https://img.shields.io/badge/dbt%20docs-live-1D9E75?style=flat&logo=dbt)](https://tomasgg00.github.io/FinSight)
+
 > A production-grade data engineering project built end-to-end: from raw market data ingestion to an AI agent that answers questions in plain English.
 
 ---

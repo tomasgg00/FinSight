@@ -158,6 +158,22 @@ def get_correlation():
     pivot = df.pivot(index="price_date", columns="ticker", values="daily_return_pct")
     return pivot.corr().round(2)
 
+@st.cache_data(ttl=3600)
+def get_pipeline_status():
+    try:
+        con = duckdb.connect(DB_PATH, read_only=True)
+        df = con.execute("""
+            SELECT run_id, run_at, status, total_rows,
+                   tickers_success, tickers_failed, duration_secs
+            FROM pipeline_runs
+            ORDER BY run_at DESC
+            LIMIT 5
+        """).df()
+        con.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
 def get_portfolio_data():
     holdings = {
         "EUNL.DE": {"name": "iShares Core MSCI World",    "units": 2,  "avg_cost": 123.57, "target_pct": 5.0},
@@ -339,7 +355,26 @@ with st.sidebar:
         label_visibility="collapsed")
     st.divider()
     snapshot = get_snapshot()
-    st.caption(f"Last updated: {snapshot['latest_date'].max()}")
+
+    from datetime import date, timedelta
+    latest_date = pd.to_datetime(snapshot['latest_date'].max()).date()
+    today       = date.today()
+    days_stale  = (today - latest_date).days
+
+    # account for weekends — data is never updated Sat/Sun
+    business_days_stale = sum(
+        1 for i in range(days_stale)
+        if (today - timedelta(days=i+1)).weekday() < 5
+    )
+
+    if business_days_stale == 0:
+        st.success("Data is current")
+    elif business_days_stale == 1:
+        st.warning("Data is 1 business day old")
+    else:
+        st.error(f"⚠️ Data is {business_days_stale} business days old — pipeline may have failed")
+
+    st.caption(f"Last updated: {latest_date}")
     st.caption(f"{len(snapshot)} tickers tracked")
 
 # ── Page 1: Market Overview ───────────────────────────────
